@@ -7,7 +7,8 @@ format:
 ---
 
 1. Read in the data
-```{r}
+```{r, message=FALSE}
+library(R.utils)
 library(data.table)
 library(leaflet)
 library(tidyverse)
