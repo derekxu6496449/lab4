@@ -1,28 +1,147 @@
 ---
-title: ""
-author: ""
+title: "Lab-4"
+author: "YangXu"
 format:
   html:
     embed-resources: true
 ---
 
-## Quarto
-
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
-
-## Running Code
-
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
-
+1. Read in the data
 ```{r}
-1 + 1
+library(data.table)
+library(leaflet)
+library(tidyverse)
+if (!file.exists("met_all.gz"))
+  download.file(
+    url = "https://raw.githubusercontent.com/USCbiostats/data-science-data/master/02_met/met_all.gz",
+    destfile = "met_all.gz",
+    method   = "libcurl",
+    timeout  = 60
+    )
+met <- data.table::fread("met_all.gz")
 ```
 
-You can add options to executable code like this
 
+2. Prepare the data
 ```{r}
-#| echo: false
-2 * 2
+dim(met)
+# Remove temp less than -17C
+met <- met[met$temp > -17]
+
+# check if any missing data coded as 9999,999,etc
+summary(met)
+
+# Replace missing data in elev with NA
+met <- met[elev == 9999, elev:=NA]
+
+# Generate a date variable
+met[, week := week(as.Date(paste(year, month, day, sep = "-")))]
+met <- met[week == min(week, na.rm = TRUE)]
+# Compute the mean
+met_avg <- met[,.(
+  temp     = mean(temp,na.rm = TRUE),
+  rh       = mean(rh,na.rm = TRUE),
+  wind.sp  = mean(wind.sp,na.rm=TRUE),
+  vis.dist = mean(vis.dist,na.rm=TRUE),
+  dew.point = mean(dew.point, na.rm=TRUE),
+  lat      = mean(lat),
+  lon      = mean(lon), 
+  elev     = mean(elev,na.rm=TRUE)
+),by = c("USAFID","day")]
+
+# Create region variables
+met_avg$region <- ifelse(met_avg$lon > -98 & met_avg$lat >39.71, "NE",
+                  ifelse(met_avg$lon > -98 & met_avg$lat < 39.71, "SE",
+                  ifelse(met_avg$lon < -98 & met_avg$lat >39.71, "NW", 
+                         "SW")))
+# Create a categorical variable for elevation
+met_avg[, elev_cat := fifelse(elev > 252, "high", "low")]
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+3. Examine the wind speed and dew point by region
+```{r}
+# Use geom_violin
+met_avg[!is.na(region)] %>%
+ggplot()+
+  geom_violin(mapping = aes(y=wind.sp, x=1)) +
+  facet_wrap(~region, nrow=2)
+# Use geom_boxplot
+met_avg[!is.na(region)] %>%
+ggplot()+
+  geom_boxplot(mapping = aes(y=wind.sp, fill=region)) +
+  facet_wrap(~region, nrow=2)
+```
+A violin plot is a mirrored density plot displayed in the same way as a boxplot.
+From the violin plot, we observe that NE and SE have lower average wind speed than
+SW and NW. The distribution of wind speed in SE and NE are less dispersed than SW 
+and NW.
+
+4. Examine the association between dew point and wind speed by region
+```{r}
+met_avg[!is.na(region)] %>%
+  ggplot(mapping = aes(x=dew.point, y=wind.sp, color=region))+
+  geom_jitter() + 
+  stat_smooth(method=lm, se = FALSE)
+```
+From the plot, we observe that in NW, NE and SE, with dew point increasing, the average 
+wind speed gets higher. But in SW, with dew point increasing, the average wind speed
+gets lower.
+
+
+5. Create barplots of the weather stations by elevation category colored by region
+```{r}
+met_avg[!is.na(region)] %>%
+  ggplot()+
+  geom_bar(mapping=aes(x=elev_cat,fill=region), position = "dodge")+
+  scale_fill_brewer(palette = "BrBG")+
+  labs(title="Number of weather stations by elevation category colored by region")+
+  labs(x="Elevation Category", y= "Weather Stations")
+```
+From the plot, we observe that in high elevation area, NE has the most weather stations.
+In low elevation area, SE has the most weather stations.
+
+
+6. Examine mean dew point and wind speed by region with standard deviation error bars
+```{r}
+met_avg[!is.na(region)] %>%
+  ggplot(mapping=aes(x=region, y=dew.point)) +
+  stat_summary(fun.data="mean_sdl", geom="errorbar") +
+  stat_summary(fun.data="mean_sdl")
+met_avg[!is.na(region)] %>%
+  ggplot(mapping=aes(x=region, y=wind.sp)) +
+  stat_summary(fun.data="mean_sdl", geom="errorbar") +
+  stat_summary(fun.data="mean_sdl")
+```
+SE has the highest mean dew point. SW has the highest mean wind speed.
+
+
+7. Make a map showing the spatial trend in relative humidity in the US
+```{r}
+met_avg2 <- met_avg[!is.na(rh)]
+# color plaette
+rh.pal <- colorNumeric(c('darkgreen','goldenrod','brown'), domain=met_avg2$rh)
+# Top10 places
+top10 <- met_avg2[rank(-rh) <= 10]
+leaflet(met_avg2) %>%
+  addProviderTiles('OpenStreetMap') %>%
+  addCircles(lat=~lat, lng=~lon, color=~rh.pal(rh), label=~paste0(round(rh,2), ' rh'), opacity=1,fillOpacity=1, radius=500) %>%
+  addMarkers(lat=~lat, lng=~lon, label=~paste0(round(rh,2), ' rh'), data = top10) %>%
+  addLegend('bottomleft',pal=rh.pal, values=met_avg2$rh, title="Relative Humidity", opacity=1)
+```
+Mid-west area of the US has the average lowest RH across the country. The closer to the east and west coasts, the higher the RH.
+
+
+8. Use a ggplot extension
+```{r}
+library(patchwork)
+p1 <- met_avg[!is.na(region)] %>%
+ggplot()+
+  geom_violin(mapping = aes(y=wind.sp, x=1)) +
+  facet_wrap(~region, nrow=2)
+
+p2 <- met_avg[!is.na(region)] %>%
+  ggplot(mapping=aes(x=region, y=dew.point)) +
+  stat_summary(fun.data="mean_sdl", geom="errorbar") +
+  stat_summary(fun.data="mean_sdl")
+p1 + p2
+```
